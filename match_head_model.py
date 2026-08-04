@@ -75,7 +75,7 @@ def main():
     )
     parser.add_argument(
         "nifti", help="Path to the NIfTI file (.nii or .nii.gz)")
-    parser.add_argument("--models_dir", default="replace with_your_path_to_head_models",
+    parser.add_argument("--models_dir", required=True,
                         help="Folder containing .bmsh head models")
     parser.add_argument("--top", type=int, default=3,
                         help="Show top N matches (default: 3)")

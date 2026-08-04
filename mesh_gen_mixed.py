@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import subprocess
 import time
+import argparse
 
 
 def extract_head_surface(img_data, threshold_list=None, target_faces=30000):
@@ -52,17 +53,6 @@ def extract_head_surface(img_data, threshold_list=None, target_faces=30000):
                     node, face = i2m.meshcheckrepair(node, face, 'cgal')
                 except:
                     node, face = i2m.meshcheckrepair(node, face)
-
-                # --- REMOVED the meshresample call that was causing hangs ---
-                # The raw surface (usually ~20k-200k faces) is fine for the
-                # 10‑20 electrode system; we skip simplification entirely.
-                # If you still want to reduce faces, set target_faces to a
-                # very large number or use a safer method.
-                # if len(face) > target_faces:
-                #     try:
-                #         node, face = i2m.meshresample(node, face, target_faces)
-                #     except:
-                #         print("  Mesh resampling skipped.")
 
                 print(
                     f"  ✓ Head surface: {len(node)} nodes, {len(face)} faces")
@@ -307,232 +297,233 @@ def create_head_mesh_from_brain(node, face, scale_factor=1.2):
 
 
 # =============================================================================
-# MAIN SCRIPT
+# MAIN SCRIPT (now with argparse)
 # =============================================================================
 
-# <-- Replace with your path
-medical_path = r"replace_with_your_path_to_nifti_or_dicom"
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate brain and head meshes from NIfTI/DICOM."
+    )
+    parser.add_argument(
+        "--input", required=True,
+        help="Path to the input NIfTI file (.nii or .nii.gz) or DICOM folder"
+    )
+    parser.add_argument(
+        "--output_dir", required=True,
+        help="Directory where all output mesh files will be saved"
+    )
+    args = parser.parse_args()
 
-img_data = None
-img = None
-temp_files = []
-file_id = None
+    # Use the arguments
+    medical_path = args.input
+    output_dir = args.output_dir
 
-try:
-    img_data, img, temp_files, file_id = load_medical_image(medical_path)
-except Exception as e:
-    print(f"Error loading image: {e}")
-    print("Please check the path and ensure it's a valid NIfTI file or DICOM folder")
-    exit()
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
 
-if file_id is None:
-    file_id = "brain"
+    # Load image
+    img_data = None
+    img = None
+    temp_files = []
+    file_id = None
 
-print(f"Processing file: {file_id}")
-
-# Normalize image
-img_data = np.nan_to_num(img_data)
-if img_data.max() > img_data.min():
-    img_data = (img_data - img_data.min()) / (img_data.max() - img_data.min())
-else:
-    print("WARNING: Image has constant values. Normalization skipped.")
-    img_data = img_data - img_data.min()
-
-print(f"Image intensity range: [{img_data.min():.3f}, {img_data.max():.3f}]")
-print(
-    f"Image statistics: mean={np.mean(img_data):.3f}, std={np.std(img_data):.3f}")
-
-# --------------------------------------------------------------------------
-# 1. EXTRACT BRAIN SURFACE
-# --------------------------------------------------------------------------
-print("\n=== Extracting brain surface ===")
-try:
-    brain_nodes, brain_faces, regions, centroids, used_threshold = generate_surface_mesh_robust(
-        img_data, threshold=0.3)
-    print(
-        f"Successfully generated brain surface with threshold {used_threshold}")
-except Exception as e:
-    print(f"ERROR: {e}")
-    cleanup_temp_files(temp_files)
-    exit()
-
-print(f"Brain surface: {len(brain_nodes)} nodes, {len(brain_faces)} faces")
-
-# Clean brain surface
-print("Cleaning brain surface...")
-try:
-    brain_nodes, brain_faces = i2m.meshcheckrepair(brain_nodes, brain_faces)
-    print(f"After repair: {len(brain_nodes)} nodes, {len(brain_faces)} faces")
-except Exception as e:
-    print(f"Warning: Brain mesh repair failed: {e}")
-
-# --------------------------------------------------------------------------
-# 2. GENERATE BRAIN TETRAHEDRAL MESH (volumetric)
-# --------------------------------------------------------------------------
-print("\n=== Generating brain tetrahedral mesh ===")
-if len(brain_faces) == 0 or len(brain_nodes) == 0:
-    print("ERROR: Invalid surface mesh, cannot generate tetrahedral mesh. Skipping.")
-    brain_nodes_tet = brain_nodes
-    brain_elem = brain_faces
-else:
     try:
-        maxvol_values = [0.03, 0.05, 0.02, 0.01]
-        for maxvol in maxvol_values:
-            try:
-                print(f"  Trying surf2mesh with maxvol = {maxvol}...")
-                brain_nodes_tet, brain_elem, _ = i2m.surf2mesh(
-                    brain_nodes, brain_faces, [], [], 0.8, maxvol, [], [], 0, 'tetgen1.5'
-                )
-                if len(brain_elem) > 0 and len(brain_nodes_tet) > 0:
-                    print(
-                        f"  ✓ Success with maxvol = {maxvol}: {len(brain_nodes_tet)} nodes, {len(brain_elem)} elements")
-                    break
-            except Exception as e:
-                print(f"  ✗ Failed with maxvol {maxvol}: {str(e)[:100]}")
-                continue
-        else:
-            raise RuntimeError("All maxvol values failed")
-        print(
-            f"Brain tetrahedral mesh: {len(brain_nodes_tet)} nodes, {len(brain_elem)} elements")
+        img_data, img, temp_files, file_id = load_medical_image(medical_path)
     except Exception as e:
-        print(f"Error with surf2mesh: {e}")
-        print("Trying alternative method (v2m)...")
+        print(f"Error loading image: {e}")
+        print("Please check the path and ensure it's a valid NIfTI file or DICOM folder")
+        sys.exit(1)
+
+    if file_id is None:
+        file_id = "brain"
+
+    print(f"Processing file: {file_id}")
+
+    # Normalize image
+    img_data = np.nan_to_num(img_data)
+    if img_data.max() > img_data.min():
+        img_data = (img_data - img_data.min()) / (img_data.max() - img_data.min())
+    else:
+        print("WARNING: Image has constant values. Normalization skipped.")
+        img_data = img_data - img_data.min()
+
+    print(f"Image intensity range: [{img_data.min():.3f}, {img_data.max():.3f}]")
+    print(
+        f"Image statistics: mean={np.mean(img_data):.3f}, std={np.std(img_data):.3f}")
+
+    # --------------------------------------------------------------------------
+    # 1. EXTRACT BRAIN SURFACE
+    # --------------------------------------------------------------------------
+    print("\n=== Extracting brain surface ===")
+    try:
+        brain_nodes, brain_faces, regions, centroids, used_threshold = generate_surface_mesh_robust(
+            img_data, threshold=0.3)
+        print(
+            f"Successfully generated brain surface with threshold {used_threshold}")
+    except Exception as e:
+        print(f"ERROR: {e}")
+        cleanup_temp_files(temp_files)
+        sys.exit(1)
+
+    print(f"Brain surface: {len(brain_nodes)} nodes, {len(brain_faces)} faces")
+
+    # Clean brain surface
+    print("Cleaning brain surface...")
+    try:
+        brain_nodes, brain_faces = i2m.meshcheckrepair(brain_nodes, brain_faces)
+        print(f"After repair: {len(brain_nodes)} nodes, {len(brain_faces)} faces")
+    except Exception as e:
+        print(f"Warning: Brain mesh repair failed: {e}")
+
+    # --------------------------------------------------------------------------
+    # 2. GENERATE BRAIN TETRAHEDRAL MESH (volumetric)
+    # --------------------------------------------------------------------------
+    print("\n=== Generating brain tetrahedral mesh ===")
+    if len(brain_faces) == 0 or len(brain_nodes) == 0:
+        print("ERROR: Invalid surface mesh, cannot generate tetrahedral mesh. Skipping.")
+        brain_nodes_tet = brain_nodes
+        brain_elem = brain_faces
+    else:
         try:
-            mask = (img_data > used_threshold).astype(np.uint8)
-            for maxvol in [5, 3, 8]:
+            maxvol_values = [0.03, 0.05, 0.02, 0.01]
+            for maxvol in maxvol_values:
                 try:
-                    print(f"  Trying v2m with maxvol = {maxvol}...")
-                    brain_nodes_tet, brain_elem, _ = i2m.v2m(
-                        mask, [], maxvol, 100, 'cgalmesh')
+                    print(f"  Trying surf2mesh with maxvol = {maxvol}...")
+                    brain_nodes_tet, brain_elem, _ = i2m.surf2mesh(
+                        brain_nodes, brain_faces, [], [], 0.8, maxvol, [], [], 0, 'tetgen1.5'
+                    )
                     if len(brain_elem) > 0 and len(brain_nodes_tet) > 0:
-                        print(f"  ✓ Success with v2m maxvol = {maxvol}")
+                        print(
+                            f"  ✓ Success with maxvol = {maxvol}: {len(brain_nodes_tet)} nodes, {len(brain_elem)} elements")
                         break
-                except Exception as e2:
-                    print(f"  ✗ Failed: {str(e2)[:100]}")
+                except Exception as e:
+                    print(f"  ✗ Failed with maxvol {maxvol}: {str(e)[:100]}")
                     continue
             else:
-                raise RuntimeError("All v2m attempts failed")
+                raise RuntimeError("All maxvol values failed")
             print(
-                f"Using v2m: {len(brain_nodes_tet)} nodes, {len(brain_elem)} elements")
-        except Exception as e2:
-            print(f"Error with v2m: {e2}")
-            print("Only brain surface will be saved.")
-            brain_nodes_tet = brain_nodes
-            brain_elem = brain_faces
+                f"Brain tetrahedral mesh: {len(brain_nodes_tet)} nodes, {len(brain_elem)} elements")
+        except Exception as e:
+            print(f"Error with surf2mesh: {e}")
+            print("Trying alternative method (v2m)...")
+            try:
+                mask = (img_data > used_threshold).astype(np.uint8)
+                for maxvol in [5, 3, 8]:
+                    try:
+                        print(f"  Trying v2m with maxvol = {maxvol}...")
+                        brain_nodes_tet, brain_elem, _ = i2m.v2m(
+                            mask, [], maxvol, 100, 'cgalmesh')
+                        if len(brain_elem) > 0 and len(brain_nodes_tet) > 0:
+                            print(f"  ✓ Success with v2m maxvol = {maxvol}")
+                            break
+                    except Exception as e2:
+                        print(f"  ✗ Failed: {str(e2)[:100]}")
+                        continue
+                else:
+                    raise RuntimeError("All v2m attempts failed")
+                print(
+                    f"Using v2m: {len(brain_nodes_tet)} nodes, {len(brain_elem)} elements")
+            except Exception as e2:
+                print(f"Error with v2m: {e2}")
+                print("Only brain surface will be saved.")
+                brain_nodes_tet = brain_nodes
+                brain_elem = brain_faces
 
-# --------------------------------------------------------------------------
-# 3. CREATE HEAD (SCALP) MESH FROM IMAGE (or fallback to scaling)
-# --------------------------------------------------------------------------
-print("\n=== Creating head (scalp) mesh ===")
-head_nodes = head_faces = None
-try:
-    # The updated extract_head_surface now avoids the problematic meshresample
-    head_nodes, head_faces = extract_head_surface(img_data)
-except Exception as e:
-    print(f"Extraction from image failed: {e}")
-    print("Falling back to scaled brain surface...")
-    scale_factor = 1.2
-    head_nodes, head_faces = create_head_mesh_from_brain(
-        brain_nodes, brain_faces, scale_factor)
+    # --------------------------------------------------------------------------
+    # 3. CREATE HEAD (SCALP) MESH FROM IMAGE (or fallback to scaling)
+    # --------------------------------------------------------------------------
+    print("\n=== Creating head (scalp) mesh ===")
+    head_nodes = head_faces = None
     try:
-        head_nodes, head_faces = i2m.meshcheckrepair(
-            head_nodes, head_faces, 'cgal')
-    except:
-        head_nodes, head_faces = i2m.meshcheckrepair(head_nodes, head_faces)
+        head_nodes, head_faces = extract_head_surface(img_data)
+    except Exception as e:
+        print(f"Extraction from image failed: {e}")
+        print("Falling back to scaled brain surface...")
+        scale_factor = 1.2
+        head_nodes, head_faces = create_head_mesh_from_brain(
+            brain_nodes, brain_faces, scale_factor)
+        try:
+            head_nodes, head_faces = i2m.meshcheckrepair(
+                head_nodes, head_faces, 'cgal')
+        except:
+            head_nodes, head_faces = i2m.meshcheckrepair(head_nodes, head_faces)
 
-if head_nodes is None or len(head_faces) == 0:
-    print("ERROR: Could not generate head surface. Exiting.")
-    cleanup_temp_files(temp_files)
-    exit()
+    if head_nodes is None or len(head_faces) == 0:
+        print("ERROR: Could not generate head surface. Exiting.")
+        cleanup_temp_files(temp_files)
+        sys.exit(1)
 
-print(f"Final head surface: {len(head_nodes)} nodes, {len(head_faces)} faces")
+    print(f"Final head surface: {len(head_nodes)} nodes, {len(head_faces)} faces")
 
-# We skip head tetrahedral mesh generation – not needed for 10-20 electrode system
-# and it was causing hangs. We just use the surface mesh.
-head_nodes_tet = head_nodes
-head_elem = head_faces
+    # We skip head tetrahedral mesh generation – not needed for 10-20 electrode system
+    head_nodes_tet = head_nodes
+    head_elem = head_faces
 
-# --------------------------------------------------------------------------
-# 4. VISUALIZATION (optional)
-# --------------------------------------------------------------------------
-print("\n=== Visualizing meshes ===")
-try:
+    # --------------------------------------------------------------------------
+    # 4. VISUALIZATION (optional) – disabled in headless Colab, but kept
+    # --------------------------------------------------------------------------
+    print("\n=== Visualizing meshes (skipped in headless environment) ===")
+    # You can enable plotting if you have a display, but Colab doesn't support it well.
+
+    # --------------------------------------------------------------------------
+    # 5. SAVE ALL MESHES TO THE SPECIFIED OUTPUT_DIR
+    # --------------------------------------------------------------------------
+    print("\n=== Saving mesh files ===")
+    # output_dir is already set from args
+
+    # Brain meshes
+    try:
+        out_brain_msh = os.path.join(output_dir, f"{file_id}_brain_mesh.msh")
+        i2m.savemsh(brain_nodes_tet, brain_elem, out_brain_msh)
+        print(f"  Saved brain tetrahedral mesh: {out_brain_msh}")
+    except Exception as e:
+        print(f"  Error saving brain .msh: {e}")
+
+    try:
+        out_brain_stl = os.path.join(output_dir, f"{file_id}_brain_surface.stl")
+        face0_brain = brain_faces - 1
+        i2m.savestl(brain_nodes, face0_brain, out_brain_stl)
+        print(f"  Saved brain surface: {out_brain_stl}")
+    except Exception as e:
+        print(f"  Error saving brain .stl: {e}")
+
+    # Head meshes
+    try:
+        out_head_msh = os.path.join(output_dir, f"{file_id}_10-20_headmesh.msh")
+        i2m.savemsh(head_nodes_tet, head_elem, out_head_msh)
+        print(f"  Saved 10-20 head surface mesh: {out_head_msh}")
+    except Exception as e:
+        print(f"  Error saving head .msh: {e}")
+
+    try:
+        out_head_stl = os.path.join(output_dir, f"{file_id}_10-20_headmesh.stl")
+        face0_head = head_faces - 1
+        i2m.savestl(head_nodes, face0_head, out_head_stl)
+        print(f"  Saved 10-20 head surface: {out_head_stl}")
+    except Exception as e:
+        print(f"  Error saving head .stl: {e}")
+
+    # --------------------------------------------------------------------------
+    # 6. SUMMARY
+    # --------------------------------------------------------------------------
+    print("\n" + "="*60)
+    print("SUMMARY")
+    print("="*60)
+    print(f"Brain surface : {len(brain_nodes)} nodes, {len(brain_faces)} faces")
     if len(brain_elem) > 0 and len(brain_nodes_tet) > 0:
-        i2m.plotmesh(brain_nodes_tet, brain_elem, alpha=0.3,
-                     title="Brain tetrahedral mesh")
+        print(
+            f"Brain tetra   : {len(brain_nodes_tet)} nodes, {len(brain_elem)} elements")
     else:
-        i2m.plotmesh(brain_nodes, brain_faces,
-                     alpha=0.3, title="Brain surface")
-except:
-    print("Could not plot brain mesh.")
+        print("Brain tetra   : not generated")
+    print(f"Head surface  : {len(head_nodes)} nodes, {len(head_faces)} faces")
+    print("Head tetra    : skipped (not needed for 10-20 system)")
+    print(f"\nFiles saved in: {output_dir}")
+    print("="*60)
 
-try:
-    if len(head_elem) > 0 and len(head_nodes_tet) > 0:
-        i2m.plotmesh(head_nodes_tet, head_elem, alpha=0.3,
-                     title="Head surface (10-20)")
-    else:
-        i2m.plotmesh(head_nodes, head_faces, alpha=0.3,
-                     title="Head surface (10-20)")
-except:
-    print("Could not plot head mesh.")
+    cleanup_temp_files(temp_files)
+    print("Processing complete!")
 
-# --------------------------------------------------------------------------
-# 5. SAVE ALL MESHES
-# --------------------------------------------------------------------------
-print("\n=== Saving mesh files ===")
-output_dir = os.path.dirname(medical_path) if os.path.isfile(
-    medical_path) else medical_path
 
-# ----- Brain meshes -----
-try:
-    out_brain_msh = os.path.join(output_dir, f"{file_id}_brain_mesh.msh")
-    i2m.savemsh(brain_nodes_tet, brain_elem, out_brain_msh)
-    print(f"Saved brain tetrahedral mesh: {out_brain_msh}")
-except Exception as e:
-    print(f"Error saving brain .msh: {e}")
-
-try:
-    out_brain_stl = os.path.join(output_dir, f"{file_id}_brain_surface.stl")
-    face0_brain = brain_faces - 1  # iso2mesh expects 0‑based faces for STL
-    i2m.savestl(brain_nodes, face0_brain, out_brain_stl)
-    print(f"Saved brain surface: {out_brain_stl}")
-except Exception as e:
-    print(f"Error saving brain .stl: {e}")
-
-# ----- Head meshes (10-20 electrode head model) -----
-try:
-    out_head_msh = os.path.join(output_dir, f"{file_id}_10-20_headmesh.msh")
-    i2m.savemsh(head_nodes_tet, head_elem, out_head_msh)
-    print(f"Saved 10-20 head surface mesh: {out_head_msh}")
-except Exception as e:
-    print(f"Error saving head .msh: {e}")
-
-try:
-    out_head_stl = os.path.join(output_dir, f"{file_id}_10-20_headmesh.stl")
-    face0_head = head_faces - 1
-    i2m.savestl(head_nodes, face0_head, out_head_stl)
-    print(f"Saved 10-20 head surface: {out_head_stl}")
-except Exception as e:
-    print(f"Error saving head .stl: {e}")
-
-# --------------------------------------------------------------------------
-# 6. SUMMARY
-# --------------------------------------------------------------------------
-print("\n" + "="*60)
-print("SUMMARY")
-print("="*60)
-print(f"Brain surface : {len(brain_nodes)} nodes, {len(brain_faces)} faces")
-if len(brain_elem) > 0 and len(brain_nodes_tet) > 0:
-    print(
-        f"Brain tetra   : {len(brain_nodes_tet)} nodes, {len(brain_elem)} elements")
-else:
-    print("Brain tetra   : not generated")
-print(f"Head surface  : {len(head_nodes)} nodes, {len(head_faces)} faces")
-print("Head tetra    : skipped (not needed for 10-20 system)")
-print("\nFiles saved:")
-print(f"  Brain: {file_id}_brain_surface.stl, {file_id}_brain_mesh.msh")
-print(f"  Head : {file_id}_10-20_headmesh.stl, {file_id}_10-20_headmesh.msh")
-print("="*60)
-
-cleanup_temp_files(temp_files)
-print("Processing complete!")
+if __name__ == "__main__":
+    import sys
+    main()
